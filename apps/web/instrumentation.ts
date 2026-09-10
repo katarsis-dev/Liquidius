@@ -1,17 +1,18 @@
 /**
- * Next.js official hook — dijalankan sekali saat server boot (Node runtime only).
+ * Next.js official hook — dijalankan sekali saat server boot (Node runtime).
  * Load `.env` root (2 level di atas apps/web) + apps/web/.env kalau ada.
  *
- * Kita parse manual (bukan dotenv) supaya webpack Next.js gak coba bundle
- * dotenv untuk Edge runtime dan gagal resolve 'path'/'fs'.
+ * WORKAROUND: webpack Next.js static-analyze `import('fs')` walau di dalam
+ * guard NEXT_RUNTIME !== 'nodejs'. Kita pakai `eval('require')` untuk hide
+ * dari webpack — di runtime tetap CommonJS require yang normal.
  */
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
 
-  // NOTE: pakai plain 'fs'/'path' (bukan 'node:fs') — webpack Next.js belum
-  // handle scheme 'node:' di dynamic import context.
-  const { readFileSync, existsSync } = await import('fs');
-  const { resolve } = await import('path');
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-eval
+  const nodeRequire = eval('require') as NodeRequire;
+  const { readFileSync, existsSync } = nodeRequire('fs') as typeof import('fs');
+  const { resolve } = nodeRequire('path') as typeof import('path');
 
   const loadEnvFile = (path: string, override = false): void => {
     if (!existsSync(path)) return;
@@ -23,7 +24,6 @@ export async function register(): Promise<void> {
       if (eq === -1) continue;
       const key = line.slice(0, eq).trim();
       let val = line.slice(eq + 1).trim();
-      // Buang quote di kanan-kiri kalau ada
       if (
         (val.startsWith('"') && val.endsWith('"')) ||
         (val.startsWith("'") && val.endsWith("'"))
@@ -36,7 +36,6 @@ export async function register(): Promise<void> {
     }
   };
 
-  // Load root .env dulu, lalu apps/web/.env kalau ada (override root).
   loadEnvFile(resolve(process.cwd(), '../../.env'), false);
   loadEnvFile(resolve(process.cwd(), '.env'), true);
 
