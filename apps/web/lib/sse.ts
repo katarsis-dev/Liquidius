@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { playAlertSound } from './notifSound';
 
 export type AlertSource = 'pumpfun' | 'dexscreener' | 'raydium' | 'pumpswap' | 'fixture';
 
@@ -81,6 +82,8 @@ export function useAlertStream(paused: boolean = false) {
       try {
         const p: AlertPayload = JSON.parse(e.data);
         bufferRef.current.push(p);
+        // Suara notif (respect mute + rate limit di helper).
+        playAlertSound(p.mode);
       } catch {
         /* ignore malformed */
       }
