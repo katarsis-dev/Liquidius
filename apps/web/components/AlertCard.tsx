@@ -34,8 +34,40 @@ const modeStyle: Record<AlertPayload['mode'], { ring: string; badge: string; tex
   },
 };
 
+const sourceStyle: Record<
+  AlertPayload['source'],
+  { badge: string; label: string; icon: string }
+> = {
+  pumpfun: {
+    badge: 'bg-purple-500/15 text-purple-300 ring-purple-500/30',
+    label: 'pump.fun',
+    icon: '🚀',
+  },
+  dexscreener: {
+    badge: 'bg-cyan-500/15 text-cyan-300 ring-cyan-500/30',
+    label: 'Dexscreener',
+    icon: '📊',
+  },
+  raydium: {
+    badge: 'bg-fuchsia-500/15 text-fuchsia-300 ring-fuchsia-500/30',
+    label: 'Raydium',
+    icon: '🌊',
+  },
+  pumpswap: {
+    badge: 'bg-teal-500/15 text-teal-300 ring-teal-500/30',
+    label: 'PumpSwap',
+    icon: '🔄',
+  },
+  fixture: {
+    badge: 'bg-slate-500/15 text-slate-300 ring-slate-500/30',
+    label: 'Fixture',
+    icon: '🧪',
+  },
+};
+
 export function AlertCard({ alert: a, isNew }: Props) {
   const style = modeStyle[a.mode];
+  const src = sourceStyle[a.source] ?? sourceStyle.dexscreener;
   const title = a.symbol || a.name || shortAddr(a.mint);
 
   return (
@@ -83,6 +115,16 @@ export function AlertCard({ alert: a, isNew }: Props) {
               )}
             >
               {a.mode}
+            </span>
+            <span
+              title={a.sourceDetail ?? src.label}
+              className={cn(
+                'text-[10px] tracking-wider rounded-md px-1.5 py-0.5 ring-1 inline-flex items-center gap-1',
+                src.badge,
+              )}
+            >
+              <span aria-hidden>{src.icon}</span>
+              {src.label}
             </span>
             <span className="text-[10px] uppercase tracking-wider rounded-md px-1.5 py-0.5 bg-white/5 text-text-muted ring-1 ring-white/10">
               {a.trigger.replace(/_/g, ' ')}

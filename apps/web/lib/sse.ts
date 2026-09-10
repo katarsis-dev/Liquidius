@@ -2,10 +2,16 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+export type AlertSource = 'pumpfun' | 'dexscreener' | 'raydium' | 'pumpswap' | 'fixture';
+
 export interface AlertPayload {
   id: string;
   mode: 'DEGEN' | 'MEDIUM' | 'SAFE';
   trigger: string;
+  /** Data source label — di-render sebagai chip di AlertCard. */
+  source: AlertSource;
+  /** Detail sumber opsional, mis. "Helius WS logs" / "DS boost feed". */
+  sourceDetail?: string;
   mint: string;
   pool: string;
   symbol?: string;

@@ -79,3 +79,25 @@ export function getTopBoosts(): Promise<DsBoost[] | null> {
 export function getPairsByToken(mint: string): Promise<DsTokensResponse | null> {
   return get<DsTokensResponse>(`/latest/dex/tokens/${mint}`);
 }
+
+/** Search pool: `/latest/dex/search?q=<query>` — return pairs terbaru/paling aktif. */
+export interface DsSearchResponse {
+  pairs: DsPair[] | null;
+}
+export function searchPairs(query: string): Promise<DsSearchResponse | null> {
+  return get<DsSearchResponse>(`/latest/dex/search?q=${encodeURIComponent(query)}`);
+}
+
+/** Latest token profiles — metadata terbaru (link sosmed, header). */
+export interface DsProfile {
+  url: string;
+  chainId: string;
+  tokenAddress: string;
+  icon?: string;
+  header?: string;
+  description?: string;
+  links?: { label: string; url: string }[];
+}
+export function getLatestProfiles(): Promise<DsProfile[] | null> {
+  return get<DsProfile[]>('/token-profiles/latest/v1');
+}
