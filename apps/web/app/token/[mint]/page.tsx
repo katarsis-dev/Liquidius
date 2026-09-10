@@ -2,30 +2,14 @@ import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import { GmgnButton } from '@/components/GmgnButton';
 import { fmtUsd, fmtPct, fmtRatio, fmtAge, shortAddr } from '@/lib/format';
-import { getRedis } from '@/lib/redis';
+import { findByMint } from '@/lib/bus';
 
 interface Props {
   params: { mint: string };
 }
 
-async function findLatestSnapshot(mint: string) {
-  const r = getRedis();
-  for (const mode of ['DEGEN', 'MEDIUM', 'SAFE']) {
-    const raws = await r.lrange(`recent:${mode}`, 0, 199);
-    for (const raw of raws) {
-      try {
-        const p = JSON.parse(raw);
-        if (p.mint === mint) return p;
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-  return null;
-}
-
-export default async function TokenDetailPage({ params }: Props) {
-  const a = await findLatestSnapshot(params.mint);
+export default function TokenDetailPage({ params }: Props) {
+  const a = findByMint(params.mint);
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-6">
@@ -85,6 +69,10 @@ export default async function TokenDetailPage({ params }: Props) {
               <li>LP locked: {yesNo(a.safety.lpLocked)}</li>
               <li>Honeypot flag: {yesNo(a.safety.honeypot)}</li>
             </ul>
+            <p className="mt-3 text-[11px] text-text-faint">
+              Field on-chain (mint auth, holders, LP burn) belum ter-enrich di free-tier mode.
+              Tambah Helius RPC key di <code className="font-mono">.env</code> untuk mengaktifkan.
+            </p>
           </div>
 
           <div className="rounded-xl border border-border bg-bg-card p-4 mb-6">

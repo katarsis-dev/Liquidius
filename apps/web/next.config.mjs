@@ -2,10 +2,8 @@
 const nextConfig = {
   reactStrictMode: true,
   images: {
-    remotePatterns: [
-      { protocol: 'https', hostname: '**' }, // token logos come from many CDNs
-    ],
+    remotePatterns: [{ protocol: 'https', hostname: '**' }],
   },
-  experimental: { serverComponentsExternalPackages: ['ioredis'] },
+  experimental: { instrumentationHook: true },
 };
 export default nextConfig;

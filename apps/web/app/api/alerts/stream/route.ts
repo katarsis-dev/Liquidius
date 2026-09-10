@@ -1,44 +1,46 @@
 import type { NextRequest } from 'next/server';
-import { getRedisSub } from '@/lib/redis';
+import { getBus } from '@/lib/bus';
+import type { AlertPayload } from '@/lib/sse';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 /**
- * Server-Sent Events endpoint. Client (`useAlertStream`) subscribe di sini
- * dan menerima payload alert realtime via Redis pub/sub channel `alerts:*`.
+ * Server-Sent Events endpoint. Baca dari in-memory bus (no Redis).
+ * Client (`useAlertStream`) subscribe di sini dan menerima payload realtime.
  */
-export async function GET(_req: NextRequest) {
+export async function GET(req: NextRequest) {
   const stream = new ReadableStream({
-    async start(controller) {
-      const sub = getRedisSub();
+    start(controller) {
       const encoder = new TextEncoder();
+      const bus = getBus();
 
       const send = (event: string, data: string) => {
-        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${data}\n\n`));
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${data}\n\n`));
+        } catch {
+          /* stream closed */
+        }
       };
 
       send('ready', JSON.stringify({ ts: Date.now() }));
+
+      const onAlert = (payload: AlertPayload) => {
+        send('alert', JSON.stringify(payload));
+      };
+      bus.emitter.on('alert', onAlert);
 
       const heartbeat = setInterval(() => {
         try {
           controller.enqueue(encoder.encode(`: ping ${Date.now()}\n\n`));
         } catch {
-          /* stream closed */
+          /* ignore */
         }
       }, 15_000);
 
-      const onMessage = (channel: string, message: string) => {
-        // channel = alerts:DEGEN|MEDIUM|SAFE
-        send('alert', message);
-      };
-
-      await sub.psubscribe('alerts:*');
-      sub.on('pmessage', (_pattern, channel, message) => onMessage(channel, message));
-
       const cleanup = () => {
         clearInterval(heartbeat);
-        sub.punsubscribe('alerts:*').catch(() => undefined);
+        bus.emitter.off('alert', onAlert);
         try {
           controller.close();
         } catch {
@@ -46,8 +48,7 @@ export async function GET(_req: NextRequest) {
         }
       };
 
-      // @ts-expect-error abort signal not fully typed in some Next versions
-      _req.signal?.addEventListener('abort', cleanup);
+      req.signal?.addEventListener('abort', cleanup);
     },
   });
 
