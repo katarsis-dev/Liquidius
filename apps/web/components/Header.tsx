@@ -1,8 +1,10 @@
 'use client';
 
 import Link from 'next/link';
-import { Activity, Pause, Play, Radio, Settings, Users } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Activity, Pause, Play, Radio, Settings, Users, Volume2, VolumeX } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { isMuted, setMuted, primeAudio, playAlertSound } from '@/lib/notifSound';
 
 interface Props {
   connected: boolean;
@@ -12,6 +14,22 @@ interface Props {
 }
 
 export function Header({ connected, paused, onTogglePause, totalAlerts }: Props) {
+  const [muted, setMutedState] = useState(true); // default true sampai hydration
+  useEffect(() => {
+    setMutedState(isMuted());
+  }, []);
+
+  const handleMute = () => {
+    const next = !muted;
+    setMuted(next);
+    setMutedState(next);
+    primeAudio(); // unlock AudioContext di user gesture
+    if (!next) {
+      // Preview 1x saat unmute biar user tau volumenya
+      playAlertSound('MEDIUM');
+    }
+  };
+
   return (
     <header className="sticky top-0 z-20 bg-bg/80 backdrop-blur border-b border-border">
       <div className="mx-auto max-w-[1600px] px-4 py-3 flex items-center gap-4">
@@ -32,6 +50,21 @@ export function Header({ connected, paused, onTogglePause, totalAlerts }: Props)
           <span className="hidden sm:inline text-xs text-text-muted tabular">
             {totalAlerts} alerts
           </span>
+          <button
+            onClick={handleMute}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium ring-1 transition-colors',
+              muted
+                ? 'bg-white/[0.03] text-text-muted ring-white/10 hover:bg-white/[0.06]'
+                : 'bg-emerald-500/10 text-emerald-300 ring-emerald-500/30 hover:bg-emerald-500/15',
+            )}
+            aria-label={muted ? 'Enable sound notifications' : 'Mute sound notifications'}
+            title={muted ? 'Sound off — click to test & enable' : 'Sound on'}
+          >
+            {muted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
+            <span className="hidden sm:inline">{muted ? 'Sound off' : 'Sound on'}</span>
+          </button>
+
           <button
             onClick={onTogglePause}
             className={cn(
