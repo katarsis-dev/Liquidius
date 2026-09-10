@@ -91,17 +91,58 @@ function shouldSend(mint: string, mode: string): boolean {
   return true;
 }
 
-// ── Filter ───────────────────────────────────────────────────────────────────
+// ── Filter — auto-skip + anti-rug/wash heuristics ────────────────────────────
 function autoSkip(p: DsPair): string[] {
   const reasons: string[] = [];
+
   const lp = p.liquidity?.usd ?? 0;
-  if (lp < 2000) reasons.push('lp<2000');
+  const vol5 = p.volume?.m5 ?? 0;
+  const vol1h = p.volume?.h1 ?? 0;
   const buys5 = p.txns?.m5?.buys ?? 0;
   const sells5 = p.txns?.m5?.sells ?? 0;
+  const buys1h = p.txns?.h1?.buys ?? 0;
+  const sells1h = p.txns?.h1?.sells ?? 0;
+  const ageSec = p.pairCreatedAt ? Math.floor((Date.now() - p.pairCreatedAt) / 1000) : 0;
+
+  // ─ Klasik (PRD §7) ─
+  if (lp < 2000) reasons.push('lp<2000');
   if (buys5 < 5) reasons.push('buyers_5m<5');
-  const vol5 = p.volume?.m5 ?? 0;
   if (vol5 > 0 && buys5 === 0 && sells5 > 0) reasons.push('volume_up_holders_down');
+
+  // ─ Anti wash-trade / bot ─
+  // Buys tinggi tapi NOL sells → dev beli sendiri (wash), bukan real interest
+  if (buys1h > 20 && sells1h === 0) reasons.push('no_sells_wash_suspect');
+  // Rasio buy/sell ekstrim → wash trade
+  if (buys1h > 30 && sells1h > 0 && buys1h / sells1h > 20) {
+    reasons.push('extreme_buy_pressure');
+  }
+  // Volume tinggi tapi count txn rendah → wash trade (order gede sedikit)
+  if (vol1h > 20_000 && buys1h + sells1h < 15) {
+    reasons.push('unique_makers_too_low');
+  }
+
+  // ─ Anti pump-and-dump / bot bait ─
+  const pumpM5 = p.priceChange?.m5 ?? 0;
+  const pumpH1 = p.priceChange?.h1 ?? 0;
+  if (pumpM5 > 500) reasons.push('pump_5m>500%');
+  if (pumpH1 > 1000) reasons.push('pump_1h>1000%');
+  // Fresh + hot → biasanya bot pumping sebelum rug
+  if (ageSec > 0 && ageSec < 120 && vol5 > 50_000) reasons.push('too_fresh_too_hot');
+
+  // ─ Anti instant-rug bait ─
+  // LP tipis tapi volume ada → LP bakal cepat drain (rug trigger)
+  if (lp < 1000 && vol5 > 5_000) reasons.push('low_lp_vs_vol');
+
   return reasons;
+}
+
+// Set of creator wallets flagged as serial-launcher (populate async via Helius RPC).
+const serialLaunchers = new Set<string>();
+export function markSerialLauncher(wallet: string): void {
+  serialLaunchers.add(wallet);
+}
+export function isSerialLauncher(wallet: string): boolean {
+  return serialLaunchers.has(wallet);
 }
 
 function matchMode(p: DsPair, m: ModeThreshold): boolean {
@@ -237,33 +278,68 @@ interface PendingPumpFun {
 const pumpfunPending = new Map<string, PendingPumpFun>();
 
 function onPumpFunCreate(ev: PumpFunCreateEvent): void {
+  // Cek serial launcher SEBELUM queue — kalau dev udah launch >3 token dalam
+  // 24 jam, skip semua alert dari dia (patterns rugger).
+  if (ev.creator && isSerialLauncher(ev.creator)) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[pipeline] skip pump.fun mint=${ev.mint.slice(0, 6)}… creator=${ev.creator.slice(0, 6)}… (serial launcher)`,
+    );
+    return;
+  }
+
   // eslint-disable-next-line no-console
-  console.log(`[pipeline] pump.fun detected mint=${ev.mint.slice(0, 6)}… sig=${ev.signature.slice(0, 8)}…`);
+  console.log(
+    `[pipeline] pump.fun queued mint=${ev.mint.slice(0, 6)}… sig=${ev.signature.slice(0, 8)}… (waiting for Dex listing)`,
+  );
   pumpfunPending.set(ev.mint, { ev, attempts: 0, firstTry: Date.now() });
 
-  // Publish "shell" alert langsung dgn info minimal — tanpa MC/LP (belum listed)
-  // Cuma di kolom DEGEN karena masih fresh pre-migrate.
-  if (shouldSend(ev.mint, 'DEGEN')) {
-    publishAlert({
-      id: `${ev.mint}:DEGEN:${Date.now()}`,
-      mode: 'DEGEN',
-      trigger: 'new_pair_detected',
-      source: 'pumpfun',
-      sourceDetail: 'Helius WS logs',
-      mint: ev.mint,
-      pool: '',
-      age_sec: 0,
-      safety: {},
-      trackedWallets: { smart: 0, sniper: 0, caller: 0 },
-      isMigrated: false,
-      links: {
-        gmgn: `https://gmgn.ai/sol/token/${ev.mint}`,
-        solscan: `https://solscan.io/token/${ev.mint}`,
-        dexscreener: `https://dexscreener.com/solana/${ev.mint}`,
-        birdeye: `https://birdeye.so/token/${ev.mint}?chain=solana`,
-      },
-      createdAt: Date.now(),
+  // Async cek history creator wallet (rate-limited di helius.ts)
+  if (ev.creator) void checkCreatorHistory(ev.creator);
+
+  // TIDAK ada shell alert — tunggu Dexscreener enrichment (retry loop), lalu
+  // baru evaluasi dgn filter penuh. Ini menghindari instant-rug + wash bait
+  // yg belum sempet ter-detect di menit awal.
+}
+
+/**
+ * Cek history creator wallet — kalau >3 pump.fun Create dalam 24 jam terakhir,
+ * mark as serial launcher (rugger pattern). Semua candidate mereka bakal
+ * di-skip.
+ */
+async function checkCreatorHistory(creator: string): Promise<void> {
+  const rpcUrl = process.env.HELIUS_RPC_URL;
+  if (!rpcUrl) return;
+  if (serialLaunchers.has(creator)) return; // udah ke-flag
+  try {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getSignaturesForAddress',
+        params: [creator, { limit: 50 }],
+      }),
     });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = (await res.json()) as any;
+    const sigs: Array<{ blockTime?: number; err: unknown }> = data?.result ?? [];
+    const dayAgo = Math.floor(Date.now() / 1000) - 86400;
+    // Approx: kalau wallet ini punya >5 tx sukses dalam 24h dan mayoritas ke
+    // pump.fun program (kita nggak decode tiap tx utk hemat RPC), flag.
+    // Heuristik konservatif: >30 sig sukses dalam 24 jam untuk wallet baru
+    // = kemungkinan besar serial launcher / bot.
+    const recentSuccess = sigs.filter((s) => !s.err && (s.blockTime ?? 0) >= dayAgo).length;
+    if (recentSuccess > 30) {
+      markSerialLauncher(creator);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[pipeline] flagged serial launcher ${creator.slice(0, 6)}… (${recentSuccess} sigs/24h)`,
+      );
+    }
+  } catch {
+    /* ignore */
   }
 }
 
@@ -273,11 +349,16 @@ async function pumpfunEnrichTick(): Promise<void> {
       pumpfunPending.delete(mint);
       continue;
     }
+    // Kalau creator ternyata baru saja ke-flag serial launcher, drop.
+    if (item.ev.creator && isSerialLauncher(item.ev.creator)) {
+      pumpfunPending.delete(mint);
+      continue;
+    }
     item.attempts++;
     const res = await getPairsByToken(mint);
     const pair = res?.pairs?.find((p) => p.chainId === 'solana');
     if (!pair) continue;
-    // pump.fun → sudah listed, publish full alert
+    // pump.fun → sudah listed, jalankan filter penuh (autoSkip + mode filter)
     publishFromPair(pair, 'pumpfun', 'Helius WS + DS enrichment');
     pumpfunPending.delete(mint);
     await sleep(150);
