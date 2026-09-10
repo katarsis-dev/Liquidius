@@ -1,10 +1,10 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { getRedis } from '@/lib/redis';
+import { getRecent } from '@/lib/bus';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-/** GET /api/alerts/recent?mode=MEDIUM&limit=100 */
+/** GET /api/alerts/recent?mode=MEDIUM&limit=100 — baca ring buffer in-memory. */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const mode = (searchParams.get('mode') ?? 'MEDIUM').toUpperCase();
@@ -12,13 +12,7 @@ export async function GET(req: NextRequest) {
   if (!['DEGEN', 'MEDIUM', 'SAFE'].includes(mode)) {
     return NextResponse.json({ error: 'invalid mode' }, { status: 400 });
   }
-  const raws = await getRedis().lrange(`recent:${mode}`, 0, limit - 1);
-  const items = raws.map((r) => {
-    try {
-      return JSON.parse(r);
-    } catch {
-      return null;
-    }
-  }).filter(Boolean);
-  return NextResponse.json({ items });
+  return NextResponse.json({
+    items: getRecent(mode as 'DEGEN' | 'MEDIUM' | 'SAFE', limit),
+  });
 }
