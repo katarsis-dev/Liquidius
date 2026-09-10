@@ -44,31 +44,54 @@ docker/         Multi-stage Dockerfile (screener + web target)
 
 ## Setup lokal
 
+**Prasyarat:** Node.js 20+, [pnpm 9](https://pnpm.io/installation), dan Docker
+(untuk Postgres + Redis). Semua perintah project pakai `pnpm` — **tidak pakai
+`corepack`** (di Windows sering error EPERM karena butuh admin).
+
+### 1. Install pnpm
+
+**Windows / macOS / Linux (npm — paling universal):**
 ```bash
-# 1. Prasyarat: Node 20+, pnpm 9, Docker (untuk Postgres + Redis)
-corepack enable && corepack prepare pnpm@9.0.0 --activate
+npm install -g pnpm@9
+pnpm --version   # pastikan keluar 9.x
+```
 
-# 2. Env
+Alternatif Windows: `winget install pnpm.pnpm`
+Alternatif macOS: `brew install pnpm`
+Alternatif Linux: `curl -fsSL https://get.pnpm.io/install.sh | sh -`
+
+### 2. Env
+
+```bash
 cp .env.example .env
-# isi HELIUS_API_KEY, HELIUS_RPC_URL, HELIUS_WSS_URL minimal.
+# Windows: copy .env.example .env
+```
+Isi minimal `HELIUS_API_KEY`, `HELIUS_RPC_URL`, `HELIUS_WSS_URL`. Untuk demo UI
+tanpa Helius, set `DEV_FIXTURE_ALERTS=true` — screener akan inject fake alert
+tiap 5s.
 
-# 3. Infra
+### 3. Infra (Postgres + Redis via Docker)
+
+```bash
 docker compose up -d postgres redis
+```
 
-# 4. Deps + prisma
+### 4. Deps + Prisma
+
+```bash
 pnpm install
 pnpm prisma:generate
 pnpm prisma:migrate
-
-# 5. Dev
-pnpm dev               # screener + web bersamaan
-# atau terpisah:
-pnpm dev:screener      # http://localhost:8080  (healthz + metrics + /alerts/recent)
-pnpm dev:web           # http://localhost:3000  (dashboard)
 ```
 
-Set `DEV_FIXTURE_ALERTS=true` di `.env` untuk inject fake alert tiap 5s tanpa
-menyentuh Helius — berguna untuk demo UI.
+### 5. Dev
+
+```bash
+pnpm dev               # screener + web bersamaan
+# atau jalankan terpisah di 2 terminal:
+pnpm dev:screener      # http://localhost:8080  (healthz, metrics, /alerts/recent)
+pnpm dev:web           # http://localhost:3000  (dashboard)
+```
 
 ## Env variables
 
