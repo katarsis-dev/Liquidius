@@ -1,0 +1,28 @@
+# Mode MEDIUM — default rekomendasi (PRD §6.2)
+name: MEDIUM
+channelEnv: TELEGRAM_CHAT_ID_MEDIUM
+color: "#eab308" # yellow
+pre_migrate:
+  pair_age:            { min_sec: 60, max_sec: 1200 }
+  market_cap:          { min_usd: 6000, max_usd: 35000 }
+  liquidity_usd:       { min: 5000, max: 25000 }
+  volume_1m_usd:       { min: 1500 }
+  volume_5m_usd:       { min: 5000 }
+  unique_buyers_5m:    { min: 25 }
+  buy_sell_ratio_5m:   { min: 1.4 }
+  top10_holder_pct:    { max: 0.28 }
+  creator_holding_pct: { max: 0.07 }
+  bundle_pct:          { max: 0.15 }
+  sniper_pct:          { max: 0.12 }
+  mint_authority:      disabled
+  freeze_authority:    disabled
+  lp_burned_or_locked: required
+  bonding_progress_pct: { min: 0.90 }
+post_migrate:
+  mc_at_migrate:              { min_usd: 12000, max_usd: 45000 }
+  volume_after_migrate_5m_usd: { min: 8000 }
+  holders_delta_5m:           { min: 1 }
+  creator_sold_after_migrate: { max: 0.20 }
+  top_holder_sold_after_migrate: { max: 0.15 }
+  tracked_smart_wallets_in:   { min: 1 }
+  cluster_wallet_count:       { max: 4 }

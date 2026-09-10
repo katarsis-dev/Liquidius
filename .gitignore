@@ -1,0 +1,39 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# builds
+dist/
+build/
+.next/
+out/
+
+# env & secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# logs
+*.log
+logs/
+
+# editor
+.vscode/
+.idea/
+.DS_Store
+
+# test / coverage
+coverage/
+.nyc_output/
+
+# prisma
+prisma/*.db
+prisma/migrations/dev/
+
+# tsc
+*.tsbuildinfo
+
+# misc
+tmp/
+.cache/

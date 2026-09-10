@@ -1,0 +1,6 @@
+{
+  "$schema": "../watchlist.schema.json",
+  "label": "sniper",
+  "note": "Wallet sniper (beli di slot awal). Alarm bila muncul di kolom safe/medium.",
+  "wallets": []
+}

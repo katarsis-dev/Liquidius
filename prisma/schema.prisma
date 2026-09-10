@@ -1,0 +1,147 @@
+// Prisma schema — Liquidius Solana Screener
+// Mengikuti §4 data model PRD.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum LaunchSource {
+  pump
+  raydium
+  pumpswap
+  other
+}
+
+enum WalletLabel {
+  smart
+  sniper
+  caller
+}
+
+enum AlertMode {
+  DEGEN
+  MEDIUM
+  SAFE
+}
+
+model Pair {
+  id                  String   @id @default(cuid())
+  mint                String   @unique
+  pool                String
+  launchSource        LaunchSource
+  creator             String
+  createdAt           DateTime @default(now())
+  // materialized latest snapshot (updated tiap enrichment)
+  marketCap           Float?
+  liquidityUsd        Float?
+  volume1mUsd         Float?
+  volume5mUsd         Float?
+  buys1m              Int?
+  sells1m             Int?
+  uniqueBuyers5m      Int?
+  buySellRatio5m      Float?
+  isMigrated          Boolean  @default(false)
+  migratedAt          DateTime?
+  bondingProgressPct  Float?
+  updatedAt           DateTime @updatedAt
+
+  safety              Safety?
+  migration           MigrationSnapshot?
+  metrics             PairMetricRolling[]
+  walletActivity      WalletActivity[]
+  alerts              AlertEvent[]
+
+  @@index([createdAt])
+  @@index([isMigrated])
+}
+
+model Safety {
+  id                    String  @id @default(cuid())
+  pair                  Pair    @relation(fields: [pairId], references: [id], onDelete: Cascade)
+  pairId                String  @unique
+  mintAuthorityDisabled Boolean?
+  freezeAuthorityDisabled Boolean?
+  lpBurned              Boolean?
+  lpLocked              Boolean?
+  lpLockUntil           DateTime?
+  top10HolderPct        Float?
+  creatorHoldingPct     Float?
+  creatorSoldPct        Float?
+  bundlePct             Float?
+  sniperPct             Float?
+  honeypotFlag          Boolean?
+  taxFee                Float?
+  updatedAt             DateTime @updatedAt
+}
+
+model MigrationSnapshot {
+  id                          String   @id @default(cuid())
+  pair                        Pair     @relation(fields: [pairId], references: [id], onDelete: Cascade)
+  pairId                      String   @unique
+  migrateTime                 DateTime
+  mcAtMigrate                 Float?
+  liqAtMigrate                Float?
+  volumeAfterMigrate1m        Float?
+  volumeAfterMigrate5m        Float?
+  holdersAfterMigrate5m       Int?
+  creatorSoldAfterMigratePct  Float?
+  topHolderSoldAfterMigratePct Float?
+}
+
+model PairMetricRolling {
+  id             String   @id @default(cuid())
+  pair           Pair     @relation(fields: [pairId], references: [id], onDelete: Cascade)
+  pairId         String
+  windowEnd      DateTime
+  buys           Int
+  sells          Int
+  uniqueBuyers   Int
+  volumeUsd      Float
+
+  @@index([pairId, windowEnd])
+}
+
+model TrackedWallet {
+  id        String       @id @default(cuid())
+  address   String       @unique
+  label     WalletLabel
+  notes     String?
+  addedAt   DateTime     @default(now())
+  activity  WalletActivity[]
+}
+
+model WalletActivity {
+  id            String    @id @default(cuid())
+  wallet        TrackedWallet? @relation(fields: [walletId], references: [id])
+  walletId      String?
+  address       String
+  pair          Pair      @relation(fields: [pairId], references: [id], onDelete: Cascade)
+  pairId        String
+  action        String    // "buy" | "sell"
+  amountUsd     Float?
+  entryMcUsd    Float?
+  stillHolding  Boolean?
+  txSignature   String
+  at            DateTime  @default(now())
+
+  @@index([address, pairId])
+  @@index([pairId, at])
+}
+
+model AlertEvent {
+  id        String    @id @default(cuid())
+  pair      Pair      @relation(fields: [pairId], references: [id], onDelete: Cascade)
+  pairId    String
+  mode      AlertMode
+  trigger   String
+  payload   Json
+  sentAt    DateTime  @default(now())
+
+  @@index([pairId, trigger, sentAt])
+  @@index([mode, sentAt])
+}

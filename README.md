@@ -1,82 +1,133 @@
-# DLMM Analytics Dashboard (Solana / Meteora) — Project Idea
+# Liquidius — Solana Token Screener & Alert System
 
-> Status: **Idea / Parked** — to be revisited after Plagcheck is done.
+Realtime screener untuk pair baru di Solana (pump.fun & Raydium/PumpSwap).
+Menghitung metrik keamanan on-chain, melacak wallet, dan mengirim alert ke
+Telegram bot + **web dashboard live** dengan tombol **Buy on GMGN** sebagai CTA
+utama.
 
-## Background
+Repurposed dari catatan ide DLMM analytics — PRD lengkap ada di
+`docs/PRDSolanaTokenScreener.md` (hasil brief user).
 
-Project ini muncul dari diskusi soal skill gap untuk level junior/intern backend developer. Tujuannya bukan sekadar portfolio piece, tapi juga vehicle untuk nutup beberapa gap teknis yang belum tersentuh di project sebelumnya (BurnoutSense, Plagcheck).
+## Fitur v1
 
-## Konsep Project
+- **Ingestion realtime** (<5s target latency) via Helius Websocket logs
+  subscription untuk 3 program: `pump.fun`, `Raydium AMM v4`, `PumpSwap`.
+- **Enrichment pipeline** (P0–P4):
+  - P0 — market cap, liquidity, volume 1m/5m, unique buyers, buy/sell ratio.
+  - P1 — mint & freeze authority, top10 holder %, creator holding %, LP burn.
+  - P2 — migration monitor (snapshot pre/post pump→raydium).
+  - P3 — wallet watchlist (smart/sniper/caller) + same-funding-source cluster.
+  - P4 — creator dump detection setelah migrate.
+- **Auto-skip gate global** (PRD §7) — filter red flag sebelum evaluasi mode.
+- **3 filter mode independen** — DEGEN, MEDIUM, SAFE-ISH — YAML config,
+  hot-reload tanpa redeploy.
+- **Alert dispatcher** — Telegram (3 channel) + Redis pub/sub → SSE ke web.
+- **Web dashboard** — Next.js 14, Tailwind, framer-motion, dark theme. Tiga
+  kolom hidup (DEGEN | MEDIUM | SAFE), kartu alert dengan safety badges,
+  tracked-wallet chips, dan tombol **Buy on GMGN** yang deep-link ke
+  `https://gmgn.ai/sol/token/{mint}`.
 
-Dashboard analitik untuk historical data DLMM (Dynamic Liquidity Market Maker) di Meteora (Solana), mencakup:
+## Struktur
 
-- Histori posisi DLMM
-- PnL (Profit and Loss) per posisi
-- Winrate per strategi
-- Labeling/framing strategi yang diimplementasikan saat membuka posisi
-- Evaluasi komparatif: strategi mana yang punya winrate terbaik
+```
+apps/screener   Node.js ingestion + enrichment + filter + alert
+apps/web        Next.js 14 App Router dashboard (SSE realtime)
+packages/core   config loaders, logger, types, Redis client
+packages/ingest Helius WS + pump.fun/Raydium/PumpSwap log parsers
+packages/enrich Safety, market rolling, migration, wallet, creator monitor
+packages/filter auto-skip gate + mode evaluator + trigger detector
+packages/alert  Telegram + web publisher + dedupe
+config/         YAML mode thresholds + JSON watchlists (edit langsung, hot-reload)
+prisma/         Postgres schema (Pair / Safety / Migration / Wallet / Alert)
+docker/         Multi-stage Dockerfile (screener + web target)
+```
 
-## Gap Mapping — Skill yang Bisa Diimplementasikan
+## Setup lokal
 
-| # | Gap Area | Implementasi di Project Ini |
-|---|----------|------------------------------|
-| 1 | Testing (unit/integration) | PnL & winrate calculation bersifat deterministik — cocok untuk unit test (input posisi → expected output) |
-| 2 | CI/CD | Pipeline deploy untuk scheduled jobs (cron fetch on-chain data) |
-| 3 | Cloud deployment | Hosting dashboard + scheduled data ingestion (AWS/GCP/VPS) |
-| 4 | API security (rate limiting, validation, env management) | Proteksi endpoint dashboard, manajemen API key (Solana RPC, dll) |
-| 5 | Database fundamentals (indexing, query optimization) | Data time-series volume besar — indexing strategy untuk query "winrate per strategi" jadi use case nyata |
-| 6 | Debugging/monitoring | Data ingestion dari Solana RPC rawan fail/rate-limit — perlu structured logging + alerting |
-| 9 | DSA | Logic untuk strategy labeling/classification — pattern matching atau clustering sederhana |
-| 11 | Auth & Authorization (RBAC, OAuth) | Jika dashboard multi-user (tracking wallet sendiri vs. orang lain) |
-| 12 | System design | Whole pipeline: ingestion → queue → cache → DB → API → dashboard. Trade-off nyata: polling vs websocket RPC, caching strategy |
+```bash
+# 1. Prasyarat: Node 20+, pnpm 9, Docker (untuk Postgres + Redis)
+corepack enable && corepack prepare pnpm@9.0.0 --activate
 
-**Gap yang TIDAK natural fit di sini:** Git workflow/PR review (#7, butuh kolaborasi tim), English communication (#10, kecuali project di-dokumentasikan dalam Inggris untuk open source), Agile/Scrum (#13, butuh konteks tim).
+# 2. Env
+cp .env.example .env
+# isi HELIUS_API_KEY, HELIUS_RPC_URL, HELIUS_WSS_URL minimal.
 
-## Tech Stack Ideas (Tentative)
+# 3. Infra
+docker compose up -d postgres redis
 
-### Data Ingestion
-- Solana RPC (public atau provider seperti Helius/QuickNode)
-- Meteora SDK/API untuk data DLMM spesifik
-- Scheduled jobs (cron / BullMQ — reuse dari pengalaman BurnoutSense)
+# 4. Deps + prisma
+pnpm install
+pnpm prisma:generate
+pnpm prisma:migrate
 
-### Backend
-- Node.js/TypeScript (Express/Fastify) atau Python/FastAPI — sesuaikan dengan stack yang mau diperdalam
-- PostgreSQL untuk data time-series (consider TimescaleDB extension jika volume besar)
-- Redis untuk caching hasil agregasi (winrate, PnL summary)
+# 5. Dev
+pnpm dev               # screener + web bersamaan
+# atau terpisah:
+pnpm dev:screener      # http://localhost:8080  (healthz + metrics + /alerts/recent)
+pnpm dev:web           # http://localhost:3000  (dashboard)
+```
 
-### Strategy Labeling/Classification
-- Rule-based labeling dulu (kategori strategi berdasarkan parameter posisi)
-- Bisa dikembangkan ke clustering (mathjs/python) jika diperlukan analisis lebih lanjut
+Set `DEV_FIXTURE_ALERTS=true` di `.env` untuk inject fake alert tiap 5s tanpa
+menyentuh Helius — berguna untuk demo UI.
 
-### Frontend/Dashboard
-- React + Recharts/Plotly untuk visualisasi PnL, winrate per strategi
-- Tabel histori posisi dengan filter/sort
+## Env variables
 
-### DevOps
-- Docker untuk containerization (consistent dengan project sebelumnya)
-- GitHub Actions untuk CI/CD (test → build → deploy)
-- Deploy ke VPS atau cloud (AWS/GCP free tier untuk awal)
+Semua rahasia HANYA dari `.env` — jangan pernah commit key. Lihat
+`.env.example` untuk daftar lengkap.
 
-## Potensi Tugas Akhir / Skripsi
+Wajib untuk production:
+- `HELIUS_API_KEY`, `HELIUS_RPC_URL`, `HELIUS_WSS_URL`
+- `DATABASE_URL`, `REDIS_URL`
+- `TELEGRAM_BOT_TOKEN` + salah satu chat ID (bila mau alert Telegram)
 
-Project ini punya potensi diangkat jadi topik skripsi (target: judul ditentukan di semester 7, eksekusi semester 8).
+## Menjalankan tests
 
-**Approach:** build product dulu → setelah MVP jadi, sebar ke komunitas (misal Meridian) dengan kuisioner → data + metodologi untuk skripsi.
+```bash
+pnpm test           # vitest unit tests (filter, enrich)
+pnpm config:lint    # validasi YAML mode + autoskip terhadap zod schema
+pnpm typecheck      # strict TS check semua workspace
+```
 
-**Yang perlu dipikirkan dari awal development (bukan setelah jadi):**
-- Desain kuisioner/instrumen pengukuran perlu dirancang sejak awal — pakai kerangka teori yang diakui (misal TAM - Technology Acceptance Model, atau UEQ - User Experience Questionnaire), bukan sekadar feedback produk biasa
-- Target responden: komunitas DLMM/Solana traders (niche) — perlu cek apakah realistis dapat sample size yang cukup (umumnya 30-100 responden untuk metode kuantitatif)
-- Rumusan masalah harus framed akademis: kemungkinan arah "pengembangan sistem + evaluasi penerimaan pengguna (technology acceptance)"
-- Timeline: MVP harus selesai cukup lama sebelum semester 8 supaya ada waktu untuk distribusi kuisioner + analisis data
+## Web dashboard — highlights UX
 
-## Next Steps (Saat Mulai)
+- 3 kolom live berdampingan, dark theme, sticky header dengan status pill
+  (Live / Disconnected) & tombol pause stream.
+- Kartu alert dengan animasi masuk (framer-motion), glow subtle saat baru
+  muncul, dan aksi utama satu-klik: **Buy on GMGN** (gradient hijau,
+  full-width di mobile). Tombol membuka `https://gmgn.ai/sol/token/{mint}`
+  di tab baru dengan `rel="noopener noreferrer"`.
+- Safety ditampilkan sebagai badge (✅/❌/❔) yang bisa di-hover untuk detail.
+- Tracked wallet ditampilkan sebagai chip: 🧠 smart · 🎯 sniper · 📣 caller.
+- Klik nama token → halaman detail dengan semua field §4 PRD.
 
-1. Selesaikan Plagcheck dulu — jangan split fokus ke 2 project WIP sekaligus
-2. Re-evaluate timing terkait komitmen jeda investasi
-3. Riset Meteora API/SDK docs — cek availability data historis DLMM
-4. Define MVP scope — mulai dari single-wallet tracking sebelum multi-user
-5. Prioritaskan gap #1 (testing) dan #5 (database) sejak awal development, jangan jadi afterthought
+## Non-goals
+
+- Tidak ada auto-buy/auto-sell di sistem (integrasi Paybox MCP sengaja
+  tidak dipakai; user manual buka GMGN untuk eksekusi).
+- Tidak cover chain selain Solana.
+- Auth minimal (single admin token) — v1 asumsi private single-user deploy.
+
+## Yang saya *uncertain*
+
+- **PumpSwap program ID** — placeholder di `packages/ingest/program-ids.ts`,
+  wajib diverifikasi via Helius docs sebelum production.
+- **Bundle/sniper heuristik** — implementasi awal berbasis slot window &
+  same-funder cluster (PRD §13 open question); mungkin butuh tuning setelah
+  data real terkumpul.
+- **Log parser pump.fun/Raydium** — saat ini heuristic regex over log
+  strings; untuk field precise (mint/pool address) di-resolve via
+  `getTransaction(signature)` di enrichment layer. Rekomendasi upgrade:
+  Anchor IDL decoder saat IDL tersedia stabil.
+- **Latency P95 <5s** — target PRD, belum ada benchmark end-to-end di real
+  network.
+
+## Roadmap next
+
+- BullMQ delayed jobs untuk enrichment post-migrate window 1m/5m.
+- Honeypot simulator via `simulateTransaction` (sell path).
+- Playwright e2e untuk memverifikasi `href` GMGN.
+- Auth cookie httpOnly untuk write endpoints (watchlist / settings edit).
 
 ---
 
-*Dokumen ini merupakan catatan ide dan rencana pengembangan, bukan implementasi final.*
+License: MIT.

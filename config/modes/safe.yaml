@@ -1,0 +1,28 @@
+# Mode SAFE-ISH — sedikit alert, lebih bersih (PRD §6.3)
+name: SAFE
+channelEnv: TELEGRAM_CHAT_ID_SAFE
+color: "#22c55e" # green
+pre_migrate:
+  pair_age:            { min_sec: 180, max_sec: 1800 }
+  market_cap:          { min_usd: 10000, max_usd: 40000 }
+  liquidity_usd:       { min: 8000, max: 40000 }
+  volume_5m_usd:       { min: 10000 }
+  unique_buyers_5m:    { min: 40 }
+  buy_sell_ratio_5m:   { min: 1.5 }
+  top10_holder_pct:    { max: 0.22 }
+  creator_holding_pct: { max: 0.04 }
+  bundle_pct:          { max: 0.08 }
+  sniper_pct:          { max: 0.08 }
+  mint_authority:      disabled
+  freeze_authority:    disabled
+  # lp_locked > 30 hari ATAU burned
+  lp_burned_or_locked: required
+  lp_lock_min_days:    30
+  is_migrated:         true
+post_migrate:
+  mc_at_migrate:              { min_usd: 15000, max_usd: 50000 }
+  volume_after_migrate_5m_usd: { min: 15000 }
+  creator_sold_after_migrate: { max: 0.10 }
+  tracked_smart_wallets_in:   { min: 2 }
+  creator_dump:               forbidden
+  skip_volume_up_holders_down: true

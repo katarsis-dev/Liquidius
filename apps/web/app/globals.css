@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: #0a0a0f;
+  color: #e6e6f0;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom scrollbar — subtle, matches dark bg */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #26263a;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #33334a;
+}
+
+/* Utility: monospace numeric */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

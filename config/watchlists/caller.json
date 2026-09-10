@@ -1,0 +1,6 @@
+{
+  "$schema": "../watchlist.schema.json",
+  "label": "caller",
+  "note": "Wallet caller/KOL yang biasa call token. Info signal, bukan trigger auto-skip.",
+  "wallets": []
+}
