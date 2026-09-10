@@ -60,23 +60,66 @@ pnpm dev:web
 Buka `http://localhost:3000` → dashboard muncul, 3 kolom bakal keisi alert
 fake tiap 5 detik.
 
-### 5. Mode real (Dexscreener polling)
+### 5. Mode real
 
-Setelah UI OK, matikan fixture mode di `.env`:
+Setelah UI OK, matikan fixture di `.env`:
 ```
 DEV_FIXTURE_ALERTS=false
 ```
-Restart `pnpm dev:web`. Sekarang sistem polling Dexscreener boosts tiap 30
-detik. Alert muncul kalau ada token Solana yang match salah satu mode filter.
 
-## Arsitektur (free-tier version)
+**Opsi A — Dexscreener only (paling minimal, no signup)**:
+Restart `pnpm dev:web`. Sistem polling Dexscreener tiap 45 detik. Alert muncul
+kalau ada Solana pair yang match filter. Chip source biasanya `Dexscreener`
+atau `Raydium`. **Tidak akan detect fresh pump.fun launches** (butuh Helius).
+
+**Opsi B — Dual-source (Helius WS + Dexscreener, rekomended)**:
+1. Signup free di https://helius.dev — dapat 1M credits/bulan.
+2. Copy API key, tambahin di `.env`:
+   ```
+   HELIUS_API_KEY=xxxxx
+   HELIUS_RPC_URL=https://mainnet.helius-rpc.com/?api-key=xxxxx
+   HELIUS_WSS_URL=wss://mainnet.helius-rpc.com/?api-key=xxxxx
+   ```
+3. Restart `pnpm dev:web`.
+
+Terminal bakal keluar:
+```
+[pipeline] starting dual-source (DS poll 45s + Helius WS)
+[helius] connecting…
+[helius] connected — subscribing pump.fun logs
+[pipeline] pump.fun detected mint=A1b2c3… sig=5xyz…
+[pipeline] dexscreener tick: 47 candidates, 2 published
+```
+
+Fresh pump.fun launches bakal muncul dgn chip 🚀 **pump.fun** biasanya di kolom
+DEGEN (baru launch), Dexscreener catch pair yg udah listed (chip 📊 / 🌊 / 🔄).
+
+## Arsitektur (free-tier dual-source)
 
 ```
-Dexscreener API (free) ─┐
-   /token-boosts/latest ─┼─> poller (30s tick) ─> mode filter (DEGEN/MEDIUM/SAFE) ─> in-memory bus
-   /token-boosts/top    ─┤                                                          ├─> SSE → Web UI
-   /latest/dex/tokens/  ─┘                                                          └─> Telegram (opt)
+Helius WS logsSubscribe (pump.fun)  ─┐
+  (opsional, kalau HELIUS_API_KEY    │
+   di-set)                           │
+                                     ├─> in-memory candidate registry
+Dexscreener REST polling (45s)  ─────┘        (dedupe by mint)
+   /token-boosts/latest                                │
+   /token-boosts/top                                   ▼
+   /token-profiles/latest                       auto-skip + 3 mode filter
+   /latest/dex/search?q=SOL                            │
+   /latest/dex/tokens/{mint}                           ▼
+                                                in-memory bus + ring buffer
+                                                       │
+                                       ┌───────────────┼──────────────┐
+                                       ▼               ▼              ▼
+                                    SSE → Web UI    Telegram      history API
 ```
+
+Setiap alert punya **source chip** yang jelas asalnya:
+- 🚀 `pump.fun` — dari Helius WS logs (fresh detection)
+- 🌊 `Raydium` — pair terdeteksi di Raydium AMM
+- 🔄 `PumpSwap` — pair terdeteksi di PumpSwap
+- 📊 `Dexscreener` — dari boost/search/profile feed
+- 🧪 `Fixture` — fake alert dev mode
 
 Semua state in-memory (proses Next.js). Restart = fresh. Cukup buat 1 user.
 
@@ -123,12 +166,18 @@ Kalau nanti mau upgrade:
 
 ## Yang saya *uncertain*
 
-- Rate limit exact Dexscreener free tier bisa berubah — kalau kena 429, tambah
-  interval polling di `apps/web/lib/pipeline.ts` konstanta `POLL_INTERVAL_MS`.
-- Metric `unique_buyers_5m` di Dexscreener adalah count `buys` (bukan unique
-  address) — approximation, bukan angka real.
-- Pre-migrate pump.fun pairs kadang belum muncul di Dexscreener sampai listed
-  di Raydium — realistic detection window: post-migrate saja.
+- **Rate limit Dexscreener free tier** bisa berubah — kalau kena 429, naikin
+  `POLL_INTERVAL_MS` di `apps/web/lib/pipeline.ts` (default 45s).
+- **Helius free tier WS connection limit** — pengalaman gw 1-2 concurrent.
+  Kita cuma subscribe 1 program (pump.fun), aman.
+- **Helius credit budget** — 1M/bulan = ~33k/hari. Tiap pump.fun launch =
+  1 `getTransaction` call (~5-10 credits). Kalau pump.fun output >2000
+  launch/hari, budget bisa nipis. Mitigation: sample rate throttle
+  (belum di-implement, TODO).
+- **Metric `unique_buyers_5m`** = count `buys` dari Dexscreener (approximation,
+  bukan unique address).
+- **pump.fun log parser** pakai regex atas string log — bisa false-positive/
+  negative. Lebih robust pakai Anchor IDL decoder (TODO).
 
 ## Command referensi
 

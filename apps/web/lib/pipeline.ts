@@ -1,29 +1,33 @@
 /**
- * Free-tier polling pipeline.
- * Runs inside Next.js Node runtime (dipicu oleh instrumentation.ts).
+ * Dual-source polling & event pipeline.
+ * Berjalan di Next.js Node runtime (dipicu instrumentation.ts).
  *
- * Loop:
- *  1. Tarik latest+top boosts dari Dexscreener → set kandidat Solana.
- *  2. Untuk tiap kandidat, hit /latest/dex/tokens/{mint} → dapat pair terbaik.
- *  3. Transform ke snapshot minimal (P0 fields: mc, lp, vol, buyers ratio).
- *  4. Evaluasi auto-skip gate + 3 mode.
- *  5. Publish alert ke in-memory bus + Telegram (jika token env di-set).
+ * Sumber:
+ *   A. Dexscreener API polling (30s) — /token-boosts/{latest,top},
+ *      /token-profiles/latest, /latest/dex/search?q=SOL → chip: dexscreener
+ *   B. Helius WS pump.fun program logs → chip: pumpfun
  *
- * TIDAK ada Redis / Postgres / Docker. Data safety on-chain (mint authority,
- * top10 holders, LP burn) tidak ter-enrich di free tier ini — field-nya
- * `undefined`, dan mode config yang require = disabled akan otomatis fail
- * kecuali user menandai token via watchlist.
- *
- * Untuk enrichment on-chain lengkap (P1+): butuh RPC key — lihat NOTES.md.
+ * Semua ke-merge di in-memory candidate registry (dedupe by mint).
+ * Publish ke bus + optional Telegram push.
  */
 
-import type { AlertPayload } from './sse';
-import { getLatestBoosts, getTopBoosts, getPairsByToken, type DsPair } from './dexscreener';
+import type { AlertPayload, AlertSource } from './sse';
+import {
+  getLatestBoosts,
+  getTopBoosts,
+  getLatestProfiles,
+  searchPairs,
+  getPairsByToken,
+  type DsPair,
+} from './dexscreener';
 import { publishAlert } from './bus';
+import { startHeliusListener, heliusEvents, type PumpFunCreateEvent } from './helius';
 
-const POLL_INTERVAL_MS = 30_000; // 30s per iterasi — hemat rate limit
-const CANDIDATE_PER_TICK = 20; // maks token yang di-enrich per tick
-const RECENT_ALERT_TTL_MS = 30 * 60_000; // dedupe 30 menit
+const POLL_INTERVAL_MS = 45_000; // 45s — hemat rate limit setelah nambah endpoint
+const CANDIDATE_PER_TICK = 30;
+const RECENT_ALERT_TTL_MS = 30 * 60_000;
+const PUMPFUN_ENRICH_RETRY_MS = 30_000;
+const PUMPFUN_ENRICH_MAX_MS = 30 * 60_000;
 
 interface ModeThreshold {
   name: 'DEGEN' | 'MEDIUM' | 'SAFE';
@@ -38,8 +42,6 @@ interface ModeThreshold {
   bsRatioMin: number;
 }
 
-// Threshold di-hardcode di sini (versi minimal buat free-tier); YAML config
-// tetap ada di config/modes/*.yaml untuk mode WS ke depan.
 const MODES: ModeThreshold[] = [
   {
     name: 'DEGEN',
@@ -79,18 +81,26 @@ const MODES: ModeThreshold[] = [
   },
 ];
 
-// Global auto-skip (§7 PRD, subset yang bisa kita hitung dari Dexscreener).
+const recentAlerts = new Map<string, number>();
+
+function shouldSend(mint: string, mode: string): boolean {
+  const key = `${mint}:${mode}`;
+  const last = recentAlerts.get(key);
+  if (last && Date.now() - last < RECENT_ALERT_TTL_MS) return false;
+  recentAlerts.set(key, Date.now());
+  return true;
+}
+
+// ── Filter ───────────────────────────────────────────────────────────────────
 function autoSkip(p: DsPair): string[] {
   const reasons: string[] = [];
   const lp = p.liquidity?.usd ?? 0;
   if (lp < 2000) reasons.push('lp<2000');
   const buys5 = p.txns?.m5?.buys ?? 0;
   const sells5 = p.txns?.m5?.sells ?? 0;
-  const uniqBuyers = buys5; // approx (Dexscreener tidak expose unique)
-  if (uniqBuyers < 5) reasons.push('buyers_5m<5');
+  if (buys5 < 5) reasons.push('buyers_5m<5');
   const vol5 = p.volume?.m5 ?? 0;
-  const holdersDown = vol5 > 0 && buys5 === 0 && sells5 > 0;
-  if (holdersDown) reasons.push('volume_up_holders_down');
+  if (vol5 > 0 && buys5 === 0 && sells5 > 0) reasons.push('volume_up_holders_down');
   return reasons;
 }
 
@@ -111,16 +121,32 @@ function matchMode(p: DsPair, m: ModeThreshold): boolean {
   return true;
 }
 
-function toPayload(p: DsPair, mode: ModeThreshold['name']): AlertPayload {
+// ── Payload builder ──────────────────────────────────────────────────────────
+function pairToPayload(
+  p: DsPair,
+  mode: ModeThreshold['name'],
+  source: AlertSource,
+  sourceDetail?: string,
+): AlertPayload {
   const ageSec = p.pairCreatedAt ? Math.floor((Date.now() - p.pairCreatedAt) / 1000) : 0;
   const mint = p.baseToken.address;
   const buys5 = p.txns?.m5?.buys ?? 0;
   const sells5 = p.txns?.m5?.sells ?? 0;
   const ratio = sells5 > 0 ? buys5 / sells5 : buys5 > 0 ? Infinity : 0;
+
+  // Derive source lebih spesifik dari dexId kalau sumber dexscreener
+  let finalSource: AlertSource = source;
+  if (source === 'dexscreener') {
+    if (p.dexId === 'raydium') finalSource = 'raydium';
+    else if (p.dexId === 'pumpswap') finalSource = 'pumpswap';
+  }
+
   return {
     id: `${mint}:${mode}:${Date.now()}`,
     mode,
     trigger: 'new_pair_detected',
+    source: finalSource,
+    sourceDetail,
     mint,
     pool: p.pairAddress,
     symbol: p.baseToken.symbol,
@@ -133,21 +159,9 @@ function toPayload(p: DsPair, mode: ModeThreshold['name']): AlertPayload {
     vol_5m_usd: p.volume?.m5,
     unique_buyers_5m: buys5,
     buy_sell_ratio_5m: ratio,
-    safety: {
-      // Field on-chain: undefined di free tier (butuh RPC key).
-      mintDisabled: undefined,
-      freezeDisabled: undefined,
-      lpBurned: undefined,
-      lpLocked: undefined,
-      topPct: undefined,
-      creatorPct: undefined,
-      bundlePct: undefined,
-      sniperPct: undefined,
-      honeypot: undefined,
-    },
+    safety: {},
     trackedWallets: { smart: 0, sniper: 0, caller: 0 },
     isMigrated: p.dexId === 'raydium' || p.dexId === 'pumpswap',
-    bondingProgressPct: undefined,
     links: {
       gmgn: `https://gmgn.ai/sol/token/${mint}`,
       solscan: `https://solscan.io/token/${mint}`,
@@ -158,48 +172,119 @@ function toPayload(p: DsPair, mode: ModeThreshold['name']): AlertPayload {
   };
 }
 
-const recentAlerts = new Map<string, number>(); // key = mint:mode → ts
-
-function shouldSend(mint: string, mode: string): boolean {
-  const key = `${mint}:${mode}`;
-  const last = recentAlerts.get(key);
-  if (last && Date.now() - last < RECENT_ALERT_TTL_MS) return false;
-  recentAlerts.set(key, Date.now());
-  return true;
+/** Publish satu pair (dari sumber apapun) via 3 mode evaluator. */
+function publishFromPair(p: DsPair, source: AlertSource, sourceDetail?: string): number {
+  if (autoSkip(p).length > 0) return 0;
+  let published = 0;
+  for (const mode of MODES) {
+    if (!matchMode(p, mode)) continue;
+    if (!shouldSend(p.baseToken.address, mode.name)) continue;
+    const payload = pairToPayload(p, mode.name, source, sourceDetail);
+    publishAlert(payload);
+    void sendTelegram(payload);
+    published++;
+  }
+  return published;
 }
 
-async function tick(): Promise<void> {
-  const [latest, top] = await Promise.all([getLatestBoosts(), getTopBoosts()]);
-  const boosts = [...(latest ?? []), ...(top ?? [])];
-  const solMints = Array.from(
-    new Set(boosts.filter((b) => b.chainId === 'solana').map((b) => b.tokenAddress)),
-  ).slice(0, CANDIDATE_PER_TICK);
+// ── Dexscreener producer ─────────────────────────────────────────────────────
+async function dexscreenerTick(): Promise<void> {
+  const [latest, top, profiles, searchSol] = await Promise.all([
+    getLatestBoosts(),
+    getTopBoosts(),
+    getLatestProfiles(),
+    searchPairs('SOL'),
+  ]);
 
-  for (const mint of solMints) {
+  const mintSet = new Set<string>();
+  for (const b of latest ?? []) if (b.chainId === 'solana') mintSet.add(b.tokenAddress);
+  for (const b of top ?? []) if (b.chainId === 'solana') mintSet.add(b.tokenAddress);
+  for (const p of profiles ?? []) if (p.chainId === 'solana') mintSet.add(p.tokenAddress);
+
+  // Pair dari search sudah punya data lengkap → publish langsung.
+  const pairsFromSearch = (searchSol?.pairs ?? []).filter((p) => p.chainId === 'solana');
+
+  const mints = Array.from(mintSet).slice(0, CANDIDATE_PER_TICK);
+  let candidates = 0;
+  let published = 0;
+
+  // Publish langsung dari search hits
+  for (const p of pairsFromSearch) {
+    candidates++;
+    published += publishFromPair(p, 'dexscreener', 'DS search q=SOL');
+  }
+
+  // Enrich boost/profile candidates → pair data
+  for (const mint of mints) {
     const res = await getPairsByToken(mint);
     const pair = res?.pairs?.find((p) => p.chainId === 'solana');
     if (!pair) continue;
+    candidates++;
+    published += publishFromPair(pair, 'dexscreener', 'DS boost/profile');
+    await sleep(150);
+  }
 
-    if (autoSkip(pair).length > 0) continue;
+  // eslint-disable-next-line no-console
+  console.log(`[pipeline] dexscreener tick: ${candidates} candidates, ${published} published`);
+}
 
-    for (const mode of MODES) {
-      if (!matchMode(pair, mode)) continue;
-      if (!shouldSend(mint, mode.name)) continue;
-      const payload = toPayload(pair, mode.name);
-      publishAlert(payload);
-      // Optional Telegram push
-      void sendTelegram(payload);
+// ── Helius producer (pump.fun) ───────────────────────────────────────────────
+interface PendingPumpFun {
+  ev: PumpFunCreateEvent;
+  attempts: number;
+  firstTry: number;
+}
+const pumpfunPending = new Map<string, PendingPumpFun>();
+
+function onPumpFunCreate(ev: PumpFunCreateEvent): void {
+  // eslint-disable-next-line no-console
+  console.log(`[pipeline] pump.fun detected mint=${ev.mint.slice(0, 6)}… sig=${ev.signature.slice(0, 8)}…`);
+  pumpfunPending.set(ev.mint, { ev, attempts: 0, firstTry: Date.now() });
+
+  // Publish "shell" alert langsung dgn info minimal — tanpa MC/LP (belum listed)
+  // Cuma di kolom DEGEN karena masih fresh pre-migrate.
+  if (shouldSend(ev.mint, 'DEGEN')) {
+    publishAlert({
+      id: `${ev.mint}:DEGEN:${Date.now()}`,
+      mode: 'DEGEN',
+      trigger: 'new_pair_detected',
+      source: 'pumpfun',
+      sourceDetail: 'Helius WS logs',
+      mint: ev.mint,
+      pool: '',
+      age_sec: 0,
+      safety: {},
+      trackedWallets: { smart: 0, sniper: 0, caller: 0 },
+      isMigrated: false,
+      links: {
+        gmgn: `https://gmgn.ai/sol/token/${ev.mint}`,
+        solscan: `https://solscan.io/token/${ev.mint}`,
+        dexscreener: `https://dexscreener.com/solana/${ev.mint}`,
+        birdeye: `https://birdeye.so/token/${ev.mint}?chain=solana`,
+      },
+      createdAt: Date.now(),
+    });
+  }
+}
+
+async function pumpfunEnrichTick(): Promise<void> {
+  for (const [mint, item] of pumpfunPending) {
+    if (Date.now() - item.firstTry > PUMPFUN_ENRICH_MAX_MS) {
+      pumpfunPending.delete(mint);
+      continue;
     }
-    // Kecil delay biar rate limit aman
+    item.attempts++;
+    const res = await getPairsByToken(mint);
+    const pair = res?.pairs?.find((p) => p.chainId === 'solana');
+    if (!pair) continue;
+    // pump.fun → sudah listed, publish full alert
+    publishFromPair(pair, 'pumpfun', 'Helius WS + DS enrichment');
+    pumpfunPending.delete(mint);
     await sleep(150);
   }
 }
 
-async function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-// ── Optional Telegram push (kalau env di-set) ────────────────────────────────
+// ── Telegram (opsional) ──────────────────────────────────────────────────────
 async function sendTelegram(a: AlertPayload): Promise<void> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId =
@@ -210,7 +295,7 @@ async function sendTelegram(a: AlertPayload): Promise<void> {
         : process.env.TELEGRAM_CHAT_ID_SAFE;
   if (!token || !chatId) return;
   const text = [
-    `*[${a.mode}] ${a.trigger.replace(/_/g, ' ')}*`,
+    `*[${a.mode}] ${a.trigger.replace(/_/g, ' ')}* · _${a.source}_`,
     `${a.symbol ?? ''} ${a.name ?? ''}`.trim() || `\`${a.mint}\``,
     ``,
     `MC $${fmt(a.mc_usd)}  ·  LP $${fmt(a.liq_usd)}`,
@@ -241,17 +326,26 @@ function fmt(v?: number): string {
   return v.toFixed(0);
 }
 
-// ── Dev fixture: inject fake alerts ──────────────────────────────────────────
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// ── Dev fixture ──────────────────────────────────────────────────────────────
 function devFixtureLoop(): void {
   const modes: Array<'DEGEN' | 'MEDIUM' | 'SAFE'> = ['DEGEN', 'MEDIUM', 'SAFE'];
+  const sources: AlertSource[] = ['pumpfun', 'dexscreener', 'raydium', 'pumpswap'];
   let i = 0;
   setInterval(() => {
-    const mode = modes[i++ % modes.length]!;
+    const mode = modes[i % modes.length]!;
+    const source = sources[i % sources.length]!;
+    i++;
     const mint = `Fx${Math.random().toString(36).slice(2, 10)}${'k'.repeat(30)}`.slice(0, 44);
-    const payload: AlertPayload = {
+    publishAlert({
       id: `${mint}:${mode}:${Date.now()}`,
       mode,
       trigger: 'new_pair_detected',
+      source,
+      sourceDetail: 'Fixture',
       mint,
       pool: mint,
       symbol: 'DEMO',
@@ -278,8 +372,8 @@ function devFixtureLoop(): void {
         sniper: 0,
         caller: 0,
       },
-      isMigrated: mode !== 'DEGEN',
-      bondingProgressPct: mode === 'DEGEN' ? 0.7 + Math.random() * 0.25 : undefined,
+      isMigrated: source !== 'pumpfun',
+      bondingProgressPct: source === 'pumpfun' ? 0.7 + Math.random() * 0.25 : undefined,
       links: {
         gmgn: `https://gmgn.ai/sol/token/${mint}`,
         solscan: `https://solscan.io/token/${mint}`,
@@ -287,8 +381,7 @@ function devFixtureLoop(): void {
         birdeye: `https://birdeye.so/token/${mint}?chain=solana`,
       },
       createdAt: Date.now(),
-    };
-    publishAlert(payload);
+    });
   }, 5000);
 }
 
@@ -297,16 +390,25 @@ let started = false;
 export function startPipeline(): void {
   if (started) return;
   started = true;
-  const devFixture = process.env.DEV_FIXTURE_ALERTS === 'true';
-  if (devFixture) {
+
+  if (process.env.DEV_FIXTURE_ALERTS === 'true') {
     // eslint-disable-next-line no-console
-    console.log('[pipeline] DEV_FIXTURE_ALERTS=true — inject fake alerts tiap 5s');
+    console.log('[pipeline] DEV_FIXTURE_ALERTS=true — inject fake alerts every 5s');
     devFixtureLoop();
     return;
   }
+
   // eslint-disable-next-line no-console
-  console.log('[pipeline] starting Dexscreener poller (30s interval)');
-  // Fire immediately, then interval
-  void tick();
-  setInterval(() => void tick(), POLL_INTERVAL_MS);
+  console.log(`[pipeline] starting dual-source (DS poll ${POLL_INTERVAL_MS / 1000}s + Helius WS)`);
+
+  // Producer A: Dexscreener polling
+  void dexscreenerTick();
+  setInterval(() => void dexscreenerTick(), POLL_INTERVAL_MS);
+
+  // Producer B: Helius WS (skip kalau env kosong)
+  heliusEvents.on('pumpfun_create', onPumpFunCreate);
+  startHeliusListener();
+
+  // Pump.fun candidate enrichment retry loop
+  setInterval(() => void pumpfunEnrichTick(), PUMPFUN_ENRICH_RETRY_MS);
 }
