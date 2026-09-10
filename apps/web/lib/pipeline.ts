@@ -21,7 +21,13 @@ import {
   type DsPair,
 } from './dexscreener';
 import { publishAlert } from './bus';
-import { startHeliusListener, heliusEvents, type PumpFunCreateEvent } from './helius';
+import {
+  startHeliusListener,
+  heliusEvents,
+  canCallHeliusRpc,
+  markHeliusRpcCall,
+  type PumpFunCreateEvent,
+} from './helius';
 
 const POLL_INTERVAL_MS = 45_000; // 45s — hemat rate limit setelah nambah endpoint
 const CANDIDATE_PER_TICK = 30;
@@ -303,14 +309,30 @@ function onPumpFunCreate(ev: PumpFunCreateEvent): void {
 }
 
 /**
- * Cek history creator wallet — kalau >3 pump.fun Create dalam 24 jam terakhir,
- * mark as serial launcher (rugger pattern). Semua candidate mereka bakal
- * di-skip.
+ * Cek history creator wallet — flag serial launcher (rugger pattern).
+ *
+ * Rate-limit strategy (biar gak habisin budget Helius):
+ *   - Share bucket dgn resolveMintFromSignature (`canCallHeliusRpc`).
+ *   - Cache hasil check per wallet — cek ulang cuma tiap 1 jam.
+ *   - Kalau bucket habis atau backlog >5, skip (drop check, biar pass —
+ *     ada filter Dex heuristics sebagai second-line defense).
  */
+const checkedCreators = new Map<string, number>(); // wallet → last check ts
+const CREATOR_CHECK_TTL_MS = 60 * 60_000;
+let pendingCreatorChecks = 0;
+
 async function checkCreatorHistory(creator: string): Promise<void> {
   const rpcUrl = process.env.HELIUS_RPC_URL;
   if (!rpcUrl) return;
-  if (serialLaunchers.has(creator)) return; // udah ke-flag
+  if (serialLaunchers.has(creator)) return;
+  const last = checkedCreators.get(creator);
+  if (last && Date.now() - last < CREATOR_CHECK_TTL_MS) return;
+  if (pendingCreatorChecks > 5) return; // backlog terlalu besar
+  if (!canCallHeliusRpc()) return; // budget habis, skip
+
+  pendingCreatorChecks++;
+  markHeliusRpcCall();
+  checkedCreators.set(creator, Date.now());
   try {
     const res = await fetch(rpcUrl, {
       method: 'POST',
@@ -319,27 +341,26 @@ async function checkCreatorHistory(creator: string): Promise<void> {
         jsonrpc: '2.0',
         id: 1,
         method: 'getSignaturesForAddress',
-        params: [creator, { limit: 50 }],
+        params: [creator, { limit: 25 }],
       }),
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data = (await res.json()) as any;
     const sigs: Array<{ blockTime?: number; err: unknown }> = data?.result ?? [];
     const dayAgo = Math.floor(Date.now() / 1000) - 86400;
-    // Approx: kalau wallet ini punya >5 tx sukses dalam 24h dan mayoritas ke
-    // pump.fun program (kita nggak decode tiap tx utk hemat RPC), flag.
-    // Heuristik konservatif: >30 sig sukses dalam 24 jam untuk wallet baru
-    // = kemungkinan besar serial launcher / bot.
     const recentSuccess = sigs.filter((s) => !s.err && (s.blockTime ?? 0) >= dayAgo).length;
-    if (recentSuccess > 30) {
+    // Kalau limit 25 terhitung penuh dalam 24 jam → wallet sangat aktif = bot suspect
+    if (recentSuccess >= 25) {
       markSerialLauncher(creator);
       // eslint-disable-next-line no-console
       console.log(
-        `[pipeline] flagged serial launcher ${creator.slice(0, 6)}… (${recentSuccess} sigs/24h)`,
+        `[pipeline] flagged serial launcher ${creator.slice(0, 6)}… (${recentSuccess}+ sigs/24h)`,
       );
     }
   } catch {
     /* ignore */
+  } finally {
+    pendingCreatorChecks--;
   }
 }
 

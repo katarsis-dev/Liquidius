@@ -16,7 +16,7 @@ import WebSocket from 'ws';
 const PUMP_FUN_PROGRAM_ID = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
-const RPC_MAX_PER_MIN = 30;
+const RPC_MAX_PER_MIN = 20; // total budget, di-share antar semua caller (resolveMint + creator check)
 
 export interface PumpFunCreateEvent {
   mint: string;
@@ -33,17 +33,20 @@ export const heliusEvents = new EventEmitter();
 let ws: WebSocket | null = null;
 let reconnectAttempt = 0;
 let stopped = false;
-const rpcTimestamps: number[] = []; // sliding window untuk rate limit
+const rpcTimestamps: number[] = []; // sliding window untuk rate limit (shared)
 
-function canCallRpc(): boolean {
+/** Shared rate limit — dipakai resolveMint + creator history check + siapapun. */
+export function canCallHeliusRpc(): boolean {
   const now = Date.now();
-  // buang timestamp yg lebih tua dari 1 menit
   while (rpcTimestamps.length && now - rpcTimestamps[0]! > 60_000) rpcTimestamps.shift();
   return rpcTimestamps.length < RPC_MAX_PER_MIN;
 }
-function markRpcCall(): void {
+export function markHeliusRpcCall(): void {
   rpcTimestamps.push(Date.now());
 }
+// Alias lama (backward compat internal)
+const canCallRpc = canCallHeliusRpc;
+const markRpcCall = markHeliusRpcCall;
 
 async function resolveMintFromSignature(signature: string): Promise<{
   mint?: string;
@@ -97,10 +100,23 @@ async function resolveMintFromSignature(signature: string): Promise<{
   }
 }
 
+let dropCounter = 0;
+
 function handleLogs(logs: string[], signature: string, slot: number): void {
   const joined = logs.join('\n');
   // Deteksi Create / InitializeBondingCurve. pump.fun v1 pakai instruksi "Create".
   if (!/Instruction:\s*(Create|InitializeBondingCurve)/i.test(joined)) return;
+
+  // Hemat RPC budget: kalau sudah dekat limit, drop event (sample).
+  // pump.fun bisa spawn puluhan token/menit — nggak semua harus di-resolve.
+  if (!canCallRpc()) {
+    dropCounter++;
+    if (dropCounter % 20 === 0) {
+      // eslint-disable-next-line no-console
+      console.log(`[helius] RPC budget saturated, dropped ${dropCounter} events so far`);
+    }
+    return;
+  }
 
   // Resolve mint di background — tidak blocking WS handler
   void (async () => {
