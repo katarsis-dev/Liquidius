@@ -10,7 +10,7 @@
  * dikonsumsi pipeline.ts.
  */
 
-import { EventEmitter } from 'node:events';
+import { EventEmitter } from 'events';
 import WebSocket from 'ws';
 
 const PUMP_FUN_PROGRAM_ID = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';

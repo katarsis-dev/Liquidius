@@ -8,8 +8,10 @@
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
 
-  const { readFileSync, existsSync } = await import('node:fs');
-  const { resolve } = await import('node:path');
+  // NOTE: pakai plain 'fs'/'path' (bukan 'node:fs') — webpack Next.js belum
+  // handle scheme 'node:' di dynamic import context.
+  const { readFileSync, existsSync } = await import('fs');
+  const { resolve } = await import('path');
 
   const loadEnvFile = (path: string, override = false): void => {
     if (!existsSync(path)) return;
