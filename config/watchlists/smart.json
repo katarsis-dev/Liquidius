@@ -1,0 +1,6 @@
+{
+  "$schema": "../watchlist.schema.json",
+  "label": "smart",
+  "note": "Wallet cuan (smart money). Isi manual, satu object per address.",
+  "wallets": []
+}

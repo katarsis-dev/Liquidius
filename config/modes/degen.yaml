@@ -1,0 +1,25 @@
+# Mode DEGEN — lebih banyak alert, lebih kotor/berisiko (PRD §6.1)
+name: DEGEN
+channelEnv: TELEGRAM_CHAT_ID_DEGEN
+color: "#f97316" # orange
+pre_migrate:
+  pair_age:            { min_sec: 30, max_sec: 720 }
+  market_cap:          { min_usd: 3000, max_usd: 25000 }
+  liquidity_usd:       { min: 2500, max: 15000 }
+  volume_1m_usd:       { min: 800 }
+  volume_5m_usd:       { min: 2000 }
+  unique_buyers_5m:    { min: 12 }
+  buy_sell_ratio_5m:   { min: 1.2 }
+  top10_holder_pct:    { max: 0.38 }
+  creator_holding_pct: { max: 0.12 }
+  bundle_pct:          { max: 0.25 }
+  sniper_pct:          { max: 0.20 }
+  mint_authority:      disabled
+  freeze_authority:    disabled
+  lp_burned_or_locked: preferred
+  bonding_progress_pct: { min: 0.70 }
+post_migrate:
+  mc_at_migrate:              { min_usd: 8000, max_usd: 40000 }
+  volume_after_migrate_1m_usd: { min: 1500 }
+  creator_sold_after_migrate: { max: 0.40 }
+  tracked_smart_wallets_in:   { min: 1 }

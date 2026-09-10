@@ -1,0 +1,12 @@
+# Auto-skip gate — berlaku global untuk semua mode (PRD §7)
+# Dieksekusi SEBELUM filter per-mode.
+liquidity_usd_min: 2000
+top10_holder_pct_max: 0.45
+creator_holding_pct_max: 0.15
+unique_buyers_5m_min: 10
+require_mint_authority_disabled: true
+require_freeze_authority_disabled: true
+skip_volume_up_holders_down: true
+skip_creator_dump_after_migrate: true
+same_funding_source:
+  cluster_wallet_count_max: 5

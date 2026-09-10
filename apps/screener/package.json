@@ -1,0 +1,31 @@
+{
+  "name": "screener",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "lint": "echo skipped"
+  },
+  "dependencies": {
+    "@liquidius/alert": "workspace:*",
+    "@liquidius/core": "workspace:*",
+    "@liquidius/enrich": "workspace:*",
+    "@liquidius/filter": "workspace:*",
+    "@liquidius/ingest": "workspace:*",
+    "@solana/web3.js": "^1.90.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.26.1",
+    "prom-client": "^15.1.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.3.0"
+  }
+}

@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: liquidius
+      POSTGRES_PASSWORD: liquidius
+      POSTGRES_DB: liquidius
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U liquidius"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  screener:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: screener
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://liquidius:liquidius@postgres:5432/liquidius
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8080:8080"
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: web
+    depends_on:
+      - screener
+      - redis
+    env_file: .env
+    environment:
+      SCREENER_API_URL: http://screener:8080
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  redisdata:
