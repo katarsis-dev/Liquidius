@@ -196,6 +196,11 @@ function scheduleReconnect(): void {
 let started = false;
 export function startHeliusListener(): void {
   if (started) return;
+  if (process.env.DISABLE_HELIUS === 'true') {
+    // eslint-disable-next-line no-console
+    console.log('[helius] DISABLE_HELIUS=true — Helius listener OFF (Dexscreener only)');
+    return;
+  }
   if (!process.env.HELIUS_API_KEY || !process.env.HELIUS_WSS_URL) {
     // eslint-disable-next-line no-console
     console.log(
